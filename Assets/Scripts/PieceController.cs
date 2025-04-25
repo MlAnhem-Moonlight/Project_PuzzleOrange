@@ -1,42 +1,46 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
+using UnityEngine;
 
 public class MoveObject : MonoBehaviour
 {
-    public float tileSize = 1f; // Kích thước 1 tile
-    public LayerMask obstacleLayer; // Lớp chướng ngại vật (Không thể di chuyển qua)
-    public LayerMask pieceLayer; // Lớp của vật thể có thể di chuyển
-    public bool isBlocked = false; // Biến kiểm tra xem có bị chặn hay không
+    public float tileSize = 1f;
+    public LayerMask obstacleLayer;
+    public LayerMask pieceLayer;
     private Vector2 targetPosition;
     private Vector2 prevPosition;
 
+    public bool complete = false; 
+    public int blockID; 
+
+    
+    private static readonly Dictionary<int, Dictionary<Vector2, int>> expectedNeighbors = new Dictionary<int, Dictionary<Vector2, int>>
+    {
+        { 1, new Dictionary<Vector2, int> { { Vector2.right, 2 }, { Vector2.down, 3 } } },
+        { 2, new Dictionary<Vector2, int> { { Vector2.left, 1 }, { Vector2.down, 4 } } },
+        { 3, new Dictionary<Vector2, int> { { Vector2.up, 1 }, { Vector2.right, 4 } } },
+        { 4, new Dictionary<Vector2, int> { { Vector2.up, 2 }, { Vector2.left, 3 } } }
+    };
+
     void Start()
     {
-        // Khởi tạo vị trí mục tiêu ban đầu là vị trí hiện tại
         targetPosition = transform.position;
         prevPosition = targetPosition;
 
-        // Kiểm tra trạng thái ngay từ khi khởi động
         UpdateBlockedStatus();
     }
 
     void Update()
     {
+        UpdateBlockedStatus();
         if (Vector2.Distance(transform.position, targetPosition) > 0.01f)
         {
-            // Trước khi di chuyển, cập nhật vị trí trước đó
             prevPosition = transform.position;
-
-            // Di chuyển đến vị trí mục tiêu một cách mượt mà
             transform.position = Vector2.MoveTowards(transform.position, targetPosition, tileSize * Time.deltaTime * 10);
-
-            // Sau khi di chuyển, cập nhật trạng thái bị chặn
-            UpdateBlockedStatus();
             return;
         }
 
         Vector2 direction = Vector2.zero;
 
-        // Kiểm tra phím nhấn để xác định hướng
         if (Input.GetKeyDown(KeyCode.UpArrow)) direction = Vector2.up;
         else if (Input.GetKeyDown(KeyCode.DownArrow)) direction = Vector2.down;
         else if (Input.GetKeyDown(KeyCode.LeftArrow)) direction = Vector2.left;
@@ -44,43 +48,84 @@ public class MoveObject : MonoBehaviour
 
         if (direction != Vector2.zero)
         {
-            Vector2 newPosition = targetPosition + direction * tileSize;
-            Collider2D pieceCollider = Physics2D.OverlapPoint(newPosition, pieceLayer);
-
-            // Cập nhật trạng thái bị chặn TRƯỚC khi kiểm tra vị trí mới
-            UpdateBlockedStatus();
-
-            if (Physics2D.OverlapPoint(newPosition, obstacleLayer))
+            if (blockedDirections[direction])
             {
-                isBlocked = true;
-                Debug.Log(name + ": Di chuyển bị chặn bởi vật cản cố định. " + direction);
+                Debug.Log("Di chuyển bị chặn bởi vật cản ở hướng: " + direction);
                 return;
             }
 
-            // Kiểm tra vật thể di chuyển được
-            if (pieceCollider != null && pieceCollider.TryGetComponent(out MoveObject pieceMovement))
-            {
-                if (pieceMovement.isBlocked)
-                {
-                    Debug.Log("Di chuyển bị chặn bởi khối phía trước.");
-                    return;
-                }
-
-                if (Vector2.Distance(pieceMovement.prevPosition, pieceMovement.targetPosition) > 0)
-                {
-                    targetPosition = pieceMovement.prevPosition;
-                    Debug.Log($"Cập nhật vị trí sang: {targetPosition}");
-                    return;
-                }
-            }
-
-            targetPosition = newPosition;
+            targetPosition = (Vector2)transform.position + direction * tileSize;
         }
     }
 
+    public Dictionary<Vector2, bool> blockedDirections = new Dictionary<Vector2, bool>
+    {
+        { Vector2.up, false },
+        { Vector2.down, false },
+        { Vector2.left, false },
+        { Vector2.right, false }
+    };
+
     void UpdateBlockedStatus()
     {
-        // Kiểm tra xem vật thể hiện tại có bị chặn hay không
-        isBlocked = Physics2D.OverlapPoint(transform.position, obstacleLayer);
+        var directions = new List<Vector2>(blockedDirections.Keys);
+
+        foreach (var direction in directions)
+        {
+            Vector2 checkPosition = (Vector2)transform.position + direction * tileSize;
+
+            if (Physics2D.OverlapPoint(checkPosition, obstacleLayer))
+            {
+                blockedDirections[direction] = true;
+            }
+            else
+            {
+                Collider2D pieceCollider = Physics2D.OverlapPoint(checkPosition, pieceLayer);
+                if (pieceCollider != null && pieceCollider.TryGetComponent(out MoveObject pieceMovement))
+                {
+                    blockedDirections[direction] = pieceMovement.blockedDirections[direction];
+                }
+                else
+                {
+                    blockedDirections[direction] = false;
+                }
+            }
+        }
+    }
+
+    private void OnTriggerStay2D(Collider2D collision)
+    {
+        if (collision.gameObject.layer == LayerMask.NameToLayer("piece"))
+        {
+            if (CheckStructureComplete())
+            {
+                complete = true;
+                Debug.Log("Cấu trúc đã hoàn thành!");
+            }
+            else complete = false;
+        }
+    }
+
+    private bool CheckStructureComplete()
+    {
+        if (!expectedNeighbors.ContainsKey(blockID)) return false;
+        
+        var neighbors = expectedNeighbors[blockID];
+
+        foreach (var neighbor in neighbors)
+        {
+            Vector2 direction = neighbor.Key;
+            int expectedNeighborID = neighbor.Value;
+
+            Vector2 checkPosition = (Vector2)transform.position + direction * tileSize;
+            Collider2D pieceCollider = Physics2D.OverlapPoint(checkPosition, pieceLayer);
+
+            if (pieceCollider == null || !pieceCollider.TryGetComponent(out MoveObject pieceMovement) || pieceMovement.blockID != expectedNeighborID)
+            {
+                return false;
+            }
+        }
+        Debug.Log("Cấu trúc hoàn thành với ID: " + blockID);
+        return true; 
     }
 }
